@@ -15,6 +15,8 @@
  */
 #pragma once
 
+#include <cuda/memory_resource>
+
 #include <cstddef>
 #include <utility>
 
@@ -109,6 +111,18 @@ class host_memory_resource {
     return do_is_equal(other);
   }
 
+  [[nodiscard]] bool operator==(host_memory_resource const& other) const noexcept
+  {
+    return do_is_equal(other);
+  }
+
+  [[nodiscard]] bool operator!=(host_memory_resource const& other) const noexcept
+  {
+    return !do_is_equal(other);
+  }
+
+  friend void get_property(host_memory_resource const&, cuda::mr::host_accessible) noexcept {}
+
  private:
   /**
    * @brief Allocates memory on the host of size at least `bytes` bytes.
@@ -161,4 +175,6 @@ class host_memory_resource {
     return this == &other;
   }
 };
+static_assert(cuda::mr::resource_with<host_memory_resource, cuda::mr::host_accessible>, "");
+
 }  // namespace rmm::mr
