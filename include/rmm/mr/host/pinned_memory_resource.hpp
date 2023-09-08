@@ -18,6 +18,7 @@
 #include <rmm/detail/aligned.hpp>
 #include <rmm/detail/error.hpp>
 #include <rmm/mr/host/host_memory_resource.hpp>
+#include <rmm/cuda_stream_view.hpp>
 
 #include <cstddef>
 #include <utility>
@@ -40,6 +41,29 @@ class pinned_memory_resource final : public host_memory_resource {
     default;  ///< @default_copy_assignment{pinned_memory_resource}
   pinned_memory_resource& operator=(pinned_memory_resource&&) =
     default;  ///< @default_move_assignment{pinned_memory_resource}
+
+  [[nodiscard]] bool supports_streams() const noexcept { return false; }
+  [[nodiscard]] bool supports_get_mem_info() const noexcept { return false; }
+  [[nodiscard]] std::pair<std::size_t, std::size_t> get_mem_info(
+    cuda_stream_view stream) const
+  {
+    return std::make_pair(0, 0);
+  }
+  [[nodiscard]] void* allocate_async(std::size_t bytes, std::size_t alignment, cuda_stream_view)
+  {
+    return do_allocate(bytes, alignment);
+  }
+  [[nodiscard]] void* allocate_async(std::size_t bytes, cuda_stream_view)
+  {
+    return do_allocate(bytes);
+  }
+  void deallocate_async(void* ptr,
+                        std::size_t bytes,
+                        std::size_t alignment,
+                        cuda_stream_view)
+  {
+    do_deallocate(ptr, rmm::detail::align_up(bytes, alignment));
+  }
 
  private:
   /**
@@ -96,4 +120,5 @@ class pinned_memory_resource final : public host_memory_resource {
       ptr, bytes, alignment, [](void* ptr) { RMM_ASSERT_CUDA_SUCCESS(cudaFreeHost(ptr)); });
   }
 };
+static_assert(cuda::mr::async_resource<pinned_memory_resource>);
 }  // namespace rmm::mr
