@@ -31,13 +31,14 @@ struct TypedUVectorTest : ::testing::Test {
 };
 
 using TestTypes = ::testing::Types<int8_t, int32_t, uint64_t, float, double>;
+using async_resource_ref = cuda::mr::async_resource_ref<cuda::mr::device_accessible>;
 
 TYPED_TEST_CASE(TypedUVectorTest, TestTypes);
 
 TYPED_TEST(TypedUVectorTest, MemoryResource)
 {
   rmm::device_uvector<TypeParam> vec(128, this->stream());
-  EXPECT_EQ(vec.memory_resource(), rmm::mr::get_current_device_resource());
+  EXPECT_EQ(vec.memory_resource(), rmm::mr::get_current_device_resource_ref());
 }
 
 TYPED_TEST(TypedUVectorTest, ZeroSizeConstructor)

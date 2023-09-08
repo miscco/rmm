@@ -26,6 +26,8 @@
 #include <cstddef>
 #include <vector>
 
+#include <cuda/memory_resource>
+
 namespace rmm {
 
 /**
@@ -67,6 +69,7 @@ namespace rmm {
  */
 template <typename T>
 class device_uvector {
+  using async_resource_ref = cuda::mr::async_resource_ref<cuda::mr::device_accessible>;
   static_assert(std::is_trivially_copyable<T>::value,
                 "device_uvector only supports types that are trivially copyable.");
 
@@ -119,7 +122,26 @@ class device_uvector {
   explicit device_uvector(
     std::size_t size,
     cuda_stream_view stream,
-    rmm::mr::device_memory_resource* mr = rmm::mr::get_current_device_resource())
+    async_resource_ref mr = rmm::mr::get_current_device_resource_ref())
+    : _storage{elements_to_bytes(size), stream, mr}
+  {
+  }
+
+  /**
+   * @brief Construct a new `device_uvector` with sufficient uninitialized storage for `size`
+   * elements.
+   *
+   * Elements are uninitialized. Reading an element before it is initialized results in undefined
+   * behavior.
+   *
+   * @param size The number of elements to allocate storage for
+   * @param stream The stream on which to perform the allocation
+   * @param mr The resource used to allocate the device storage
+   */
+  explicit device_uvector(
+    std::size_t size,
+    cuda_stream_view stream,
+    rmm::mr::device_memory_resource* mr)
     : _storage{elements_to_bytes(size), stream, mr}
   {
   }
@@ -136,7 +158,24 @@ class device_uvector {
   explicit device_uvector(
     device_uvector const& other,
     cuda_stream_view stream,
-    rmm::mr::device_memory_resource* mr = rmm::mr::get_current_device_resource())
+    async_resource_ref mr = rmm::mr::get_current_device_resource_ref())
+    : _storage{other._storage, stream, mr}
+  {
+  }
+
+  /**
+   * @brief Construct a new device_uvector by deep copying the contents of another `device_uvector`.
+   *
+   * Elements are copied as if by `memcpy`, i.e., `T`'s copy constructor is not invoked.
+   *
+   * @param other The vector to copy from
+   * @param stream The stream on which to perform the copy
+   * @param mr The resource used to allocate device memory for the new vector
+   */
+  explicit device_uvector(
+    device_uvector const& other,
+    cuda_stream_view stream,
+    rmm::mr::device_memory_resource* mr)
     : _storage{other._storage, stream, mr}
   {
   }
@@ -521,10 +560,12 @@ class device_uvector {
   /**
    * @briefreturn{Pointer to underlying resource used to allocate and deallocate the device storage}
    */
-  [[nodiscard]] mr::device_memory_resource* memory_resource() const noexcept
+  [[nodiscard]] cuda::mr::async_resource_ref<cuda::mr::device_accessible> memory_resource() const noexcept
   {
     return _storage.memory_resource();
   }
+
+  friend void get_property(device_uvector const&, cuda::mr::device_accessible) noexcept {}
 
   /**
    * @briefreturn{Stream most recently specified for allocation/deallocation}

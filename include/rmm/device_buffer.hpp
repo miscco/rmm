@@ -27,13 +27,15 @@
 #include <stdexcept>
 #include <utility>
 
+#include <cuda/memory_resource>
+
 namespace rmm {
 /**
  * @brief RAII construct for device memory allocation
  *
  * This class allocates untyped and *uninitialized* device memory using a
  * `device_memory_resource`. If not explicitly specified, the memory resource
- * returned from `get_current_device_resource()` is used.
+ * returned from `get_current_device_resource_ref()` is used.
  *
  * @note Unlike `std::vector` or `thrust::device_vector`, the device memory
  * allocated by a `device_buffer` is uninitialized. Therefore, it is undefined
@@ -74,6 +76,7 @@ namespace rmm {
  *```
  */
 class device_buffer {
+  using async_resource_ref = cuda::mr::async_resource_ref<cuda::mr::device_accessible>;
  public:
   // The copy constructor and copy assignment operator without a stream are deleted because they
   // provide no way to specify an explicit stream
@@ -87,7 +90,7 @@ class device_buffer {
   // `__host__ __device__` specifiers to the defaulted constructor when it is called within the
   // context of both host and device functions. Specifically, the `cudf::type_dispatcher` is a host-
   // device function. This causes warnings/errors because this ctor invokes host-only functions.
-  device_buffer() : _mr{rmm::mr::get_current_device_resource()} {}
+  device_buffer() : _mr{rmm::mr::get_current_device_resource_ref()} {}
 
   /**
    * @brief Constructs a new device buffer of `size` uninitialized bytes
@@ -101,8 +104,26 @@ class device_buffer {
    */
   explicit device_buffer(std::size_t size,
                          cuda_stream_view stream,
-                         mr::device_memory_resource* mr = mr::get_current_device_resource())
+                         async_resource_ref mr = mr::get_current_device_resource_ref())
     : _stream{stream}, _mr{mr}
+  {
+    allocate_async(size);
+  }
+
+  /**
+   * @brief Constructs a new device buffer of `size` uninitialized bytes
+   *
+   * @throws rmm::bad_alloc If allocation fails.
+   *
+   * @param size Size in bytes to allocate in device memory.
+   * @param stream CUDA stream on which memory may be allocated if the memory
+   * resource supports streams.
+   * @param mr Memory resource to use for the device memory allocation.
+   */
+  explicit device_buffer(std::size_t size,
+                         cuda_stream_view stream,
+                         mr::device_memory_resource* mr)
+    : _stream{stream}, _mr{*mr}
   {
     allocate_async(size);
   }
@@ -129,8 +150,37 @@ class device_buffer {
   device_buffer(void const* source_data,
                 std::size_t size,
                 cuda_stream_view stream,
-                mr::device_memory_resource* mr = mr::get_current_device_resource())
+                async_resource_ref mr = mr::get_current_device_resource_ref())
     : _stream{stream}, _mr{mr}
+  {
+    allocate_async(size);
+    copy_async(source_data, size);
+  }
+
+  /**
+   * @brief Construct a new device buffer by copying from a raw pointer to an existing host or
+   * device memory allocation.
+   *
+   * @note This function does not synchronize `stream`. `source_data` is copied on `stream`, so the
+   * caller is responsible for correct synchronization to ensure that `source_data` is valid when
+   * the copy occurs. This includes destroying `source_data` in stream order after this function is
+   * called, or synchronizing or waiting on `stream` after this function returns as necessary.
+   *
+   * @throws rmm::bad_alloc If creating the new allocation fails.
+   * @throws rmm::logic_error If `source_data` is null, and `size != 0`.
+   * @throws rmm::cuda_error if copying from the device memory fails.
+   *
+   * @param source_data Pointer to the host or device memory to copy from.
+   * @param size Size in bytes to copy.
+   * @param stream CUDA stream on which memory may be allocated if the memory
+   * resource supports streams.
+   * @param mr Memory resource to use for the device memory allocation
+   */
+  device_buffer(void const* source_data,
+                std::size_t size,
+                cuda_stream_view stream,
+                mr::device_memory_resource* mr)
+    : _stream{stream}, _mr{*mr}
   {
     allocate_async(size);
     copy_async(source_data, size);
@@ -159,7 +209,35 @@ class device_buffer {
    */
   device_buffer(device_buffer const& other,
                 cuda_stream_view stream,
-                rmm::mr::device_memory_resource* mr = rmm::mr::get_current_device_resource())
+                async_resource_ref mr = mr::get_current_device_resource_ref())
+    : device_buffer{other.data(), other.size(), stream, mr}
+  {
+  }
+
+  /**
+   * @brief Construct a new `device_buffer` by deep copying the contents of
+   * another `device_buffer`, optionally using the specified stream and memory
+   * resource.
+   *
+   * @note Only copies `other.size()` bytes from `other`, i.e., if
+   *`other.size() != other.capacity()`, then the size and capacity of the newly
+   * constructed `device_buffer` will be equal to `other.size()`.
+   *
+   * @note This function does not synchronize `stream`. `other` is copied on `stream`, so the
+   * caller is responsible for correct synchronization to ensure that `other` is valid when
+   * the copy occurs. This includes destroying `other` in stream order after this function is
+   * called, or synchronizing or waiting on `stream` after this function returns as necessary.
+   *
+   * @throws rmm::bad_alloc If creating the new allocation fails.
+   * @throws rmm::cuda_error if copying from `other` fails.
+   *
+   * @param other The `device_buffer` whose contents will be copied
+   * @param stream The stream to use for the allocation and copy
+   * @param mr The resource to use for allocating the new `device_buffer`
+   */
+  device_buffer(device_buffer const& other,
+                cuda_stream_view stream,
+                rmm::mr::device_memory_resource* mr)
     : device_buffer{other.data(), other.size(), stream, mr}
   {
   }
@@ -233,7 +311,6 @@ class device_buffer {
   ~device_buffer() noexcept
   {
     deallocate_async();
-    _mr     = nullptr;
     _stream = cuda_stream_view{};
   }
 
@@ -394,16 +471,18 @@ class device_buffer {
   /**
    * @briefreturn{Pointer to the memory resource used to allocate and deallocate}
    */
-  [[nodiscard]] mr::device_memory_resource* memory_resource() const noexcept { return _mr; }
+  [[nodiscard]] async_resource_ref memory_resource() const noexcept { return _mr; }
+
+  friend void get_property(device_buffer const&, cuda::mr::device_accessible) noexcept {}
 
  private:
-  void* _data{nullptr};                  ///< Pointer to device memory allocation
-  std::size_t _size{};                   ///< Requested size of the device memory allocation
-  std::size_t _capacity{};               ///< The actual size of the device memory allocation
-  cuda_stream_view _stream{};            ///< Stream to use for device memory deallocation
-  mr::device_memory_resource* _mr{
-    mr::get_current_device_resource()};  ///< The memory resource used to
-                                         ///< allocate/deallocate device memory
+  void* _data{nullptr};        ///< Pointer to device memory allocation
+  std::size_t _size{};         ///< Requested size of the device memory allocation
+  std::size_t _capacity{};     ///< The actual size of the device memory allocation
+  cuda_stream_view _stream{};  ///< Stream to use for device memory deallocation
+  async_resource_ref _mr{
+    mr::get_current_device_resource_ref()};  ///< The memory resource used to
+                                          ///< allocate/deallocate device memory
 
   /**
    * @brief Allocates the specified amount of memory and updates the size/capacity accordingly.
@@ -418,7 +497,7 @@ class device_buffer {
   {
     _size     = bytes;
     _capacity = bytes;
-    _data     = (bytes > 0) ? memory_resource()->allocate(bytes, stream()) : nullptr;
+    _data     = (bytes > 0) ? _mr.allocate_async(bytes, stream()) : nullptr;
   }
 
   /**
@@ -432,7 +511,7 @@ class device_buffer {
    */
   void deallocate_async() noexcept
   {
-    if (capacity() > 0) { memory_resource()->deallocate(data(), capacity(), stream()); }
+    if (capacity() > 0) { _mr.deallocate_async(data(), capacity(), stream()); }
     _size     = 0;
     _capacity = 0;
     _data     = nullptr;
