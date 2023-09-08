@@ -57,13 +57,16 @@ rapids_cpm_init()
 include(cmake/thirdparty/get_fmt.cmake)
 include(cmake/thirdparty/get_spdlog.cmake)
 include(cmake/thirdparty/get_thrust.cmake)
+include(cmake/thirdparty/get_cccl.cmake)
 
 # library targets
 add_library(rmm INTERFACE)
 add_library(rmm::rmm ALIAS rmm)
 
-target_include_directories(rmm INTERFACE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
-                                         "$<INSTALL_INTERFACE:include>")
+target_include_directories(
+  rmm
+  INTERFACE "$<BUILD_INTERFACE:${CCCL_INCLUDE_DIR}>"
+            "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>" "$<INSTALL_INTERFACE:include>")
 
 if(CUDA_STATIC_RUNTIME)
   message(STATUS "RMM: Enabling static linking of cudart")
@@ -115,6 +118,7 @@ endif()
 # install export targets
 install(TARGETS rmm EXPORT rmm-exports)
 install(DIRECTORY include/rmm/ DESTINATION include/rmm)
+install(DIRECTORY ${cccl_INCLUDE_DIR} DESTINATION include)
 install(FILES ${RMM_BINARY_DIR}/include/rmm/version_config.hpp DESTINATION include/rmm)
 
 set(doc_string
